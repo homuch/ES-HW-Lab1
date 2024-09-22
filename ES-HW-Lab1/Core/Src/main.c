@@ -775,6 +775,7 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+// Button press interrupt callback
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 	switch(GPIO_Pin){
 	case BUTTON_EXTI13_Pin:
@@ -785,12 +786,13 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 	}
 }
 
+// Timer interrupt callback
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	// check if the timer is tim3
-  if(htim == &htim3)
-  {
-	 osSemaphoreRelease(myBinarySem02Handle);
-  }
+	if(htim == &htim3)
+	{
+		osSemaphoreRelease(myBinarySem02Handle);
+	}
 }
 /* USER CODE END 4 */
 
