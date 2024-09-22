@@ -32,7 +32,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define LONG_PRESS_THRESHOLD 1000 // 1 second in milliseconds
+#define DEBOUNCE_DELAY 50 // 50 milliseconds debounce delay
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -56,34 +57,34 @@ UART_HandleTypeDef huart3;
 
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
-/* Definitions for myTask01 */
-osThreadId_t myTask01Handle;
-const osThreadAttr_t myTask01_attributes = {
-  .name = "myTask01",
+/* Definitions for buttonBlink */
+osThreadId_t buttonBlinkHandle;
+const osThreadAttr_t buttonBlink_attributes = {
+  .name = "buttonBlink",
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityHigh6,
 };
-/* Definitions for myTask02 */
-osThreadId_t myTask02Handle;
-const osThreadAttr_t myTask02_attributes = {
-  .name = "myTask02",
+/* Definitions for regularBlink */
+osThreadId_t regularBlinkHandle;
+const osThreadAttr_t regularBlink_attributes = {
+  .name = "regularBlink",
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityHigh7,
 };
-/* Definitions for myMutex01 */
-osMutexId_t myMutex01Handle;
-const osMutexAttr_t myMutex01_attributes = {
-  .name = "myMutex01"
+/* Definitions for pressPeriodMessageQueue */
+osMessageQueueId_t pressPeriodMessageQueueHandle;
+const osMessageQueueAttr_t pressPeriodMessageQueue_attributes = {
+  .name = "pressPeriodMessageQueue"
 };
-/* Definitions for myBinarySem01 */
-osSemaphoreId_t myBinarySem01Handle;
-const osSemaphoreAttr_t myBinarySem01_attributes = {
-  .name = "myBinarySem01"
+/* Definitions for LED2Mutex */
+osMutexId_t LED2MutexHandle;
+const osMutexAttr_t LED2Mutex_attributes = {
+  .name = "LED2Mutex"
 };
-/* Definitions for myBinarySem02 */
-osSemaphoreId_t myBinarySem02Handle;
-const osSemaphoreAttr_t myBinarySem02_attributes = {
-  .name = "myBinarySem02"
+/* Definitions for timerBinarySem */
+osSemaphoreId_t timerBinarySemHandle;
+const osSemaphoreAttr_t timerBinarySem_attributes = {
+  .name = "timerBinarySem"
 };
 /* USER CODE BEGIN PV */
 
@@ -100,8 +101,8 @@ static void MX_USART1_UART_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_USB_OTG_FS_PCD_Init(void);
 static void MX_TIM3_Init(void);
-void StartTask01(void *argument);
-void StartTask02(void *argument);
+void handleButtonBlink(void *argument);
+void handle10HzRegularBlink(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -156,19 +157,16 @@ int main(void)
   /* Init scheduler */
   osKernelInitialize();
   /* Create the mutex(es) */
-  /* creation of myMutex01 */
-  myMutex01Handle = osMutexNew(&myMutex01_attributes);
+  /* creation of LED2Mutex */
+  LED2MutexHandle = osMutexNew(&LED2Mutex_attributes);
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
   /* USER CODE END RTOS_MUTEX */
 
   /* Create the semaphores(s) */
-  /* creation of myBinarySem01 */
-  myBinarySem01Handle = osSemaphoreNew(1, 0, &myBinarySem01_attributes);
-
-  /* creation of myBinarySem02 */
-  myBinarySem02Handle = osSemaphoreNew(1, 0, &myBinarySem02_attributes);
+  /* creation of timerBinarySem */
+  timerBinarySemHandle = osSemaphoreNew(1, 0, &timerBinarySem_attributes);
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
@@ -179,16 +177,20 @@ int main(void)
   HAL_TIM_Base_Start_IT(&htim3);
   /* USER CODE END RTOS_TIMERS */
 
+  /* Create the queue(s) */
+  /* creation of pressPeriodMessageQueue */
+  pressPeriodMessageQueueHandle = osMessageQueueNew (16, sizeof(uint16_t), &pressPeriodMessageQueue_attributes);
+
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* creation of myTask01 */
-  myTask01Handle = osThreadNew(StartTask01, NULL, &myTask01_attributes);
+  /* creation of buttonBlink */
+  buttonBlinkHandle = osThreadNew(handleButtonBlink, NULL, &buttonBlink_attributes);
 
-  /* creation of myTask02 */
-  myTask02Handle = osThreadNew(StartTask02, NULL, &myTask02_attributes);
+  /* creation of regularBlink */
+  regularBlinkHandle = osThreadNew(handle10HzRegularBlink, NULL, &regularBlink_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -328,7 +330,7 @@ static void MX_I2C2_Init(void)
 
   /* USER CODE END I2C2_Init 1 */
   hi2c2.Instance = I2C2;
-  hi2c2.Init.Timing = 0x00000E14;
+  hi2c2.Init.Timing = 0x10D19CE4;
   hi2c2.Init.OwnAddress1 = 0;
   hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -641,7 +643,7 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin : BUTTON_EXTI13_Pin */
   GPIO_InitStruct.Pin = BUTTON_EXTI13_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(BUTTON_EXTI13_GPIO_Port, &GPIO_InitStruct);
 
@@ -775,14 +777,46 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+uint32_t button_press_time = 0; // Time when button was pressed
+uint32_t last_interrupt_time = 0; // Time of the last interrupt (for debounce)
+uint8_t button_state = 0;         // 0: released, 1: pressed
+
 // Button press interrupt callback
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
-	switch(GPIO_Pin){
-	case BUTTON_EXTI13_Pin:
-		osSemaphoreRelease(myBinarySem01Handle);
-		break;
-	default:
-		break;
+	if (GPIO_Pin == BUTTON_EXTI13_Pin) {
+		uint32_t current_time = HAL_GetTick();
+
+		// Debounce check (ignore if within debounce period)
+		if (current_time - last_interrupt_time < DEBOUNCE_DELAY) {
+			return;
+		}
+
+		last_interrupt_time = current_time;
+
+		// Check if it's a press (falling edge) or release (rising edge)
+		if (HAL_GPIO_ReadPin(GPIOC, BUTTON_EXTI13_Pin) == GPIO_PIN_RESET) {
+			// Button pressed (falling edge)
+			if (button_state == 0) {  // Only handle if it was previously released
+				button_press_time = current_time;
+				button_state = 1;    // Set state to pressed
+			}
+	    } else {
+		// Button released (rising edge)
+			if (button_state == 1) {  // Only handle if it was previously pressed
+				uint32_t press_duration = current_time - button_press_time;
+				button_state = 0;    // Set state to released
+
+				// Check if it was a long press or a short press
+				if (press_duration >= LONG_PRESS_THRESHOLD) {
+					uint8_t msg = 1;  // Long press
+					osMessageQueuePut(pressPeriodMessageQueueHandle, &msg, 0, 0);
+				} else {
+					uint8_t msg = 0;  // Short press
+					osMessageQueuePut(pressPeriodMessageQueueHandle, &msg, 0, 0);
+				}
+			}
+	    }
 	}
 }
 
@@ -791,61 +825,74 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	// check if the timer is tim3
 	if(htim == &htim3)
 	{
-		osSemaphoreRelease(myBinarySem02Handle);
+		osSemaphoreRelease(timerBinarySemHandle);
 	}
 }
 /* USER CODE END 4 */
 
-/* USER CODE BEGIN Header_StartTask01 */
+/* USER CODE BEGIN Header_handleButtonBlink */
 /**
-  * @brief  Function implementing the myTask01 thread.
+  * @brief  Function implementing the buttonBlink thread.
   * @param  argument: Not used
   * @retval None
   */
-/* USER CODE END Header_StartTask01 */
-void StartTask01(void *argument)
+/* USER CODE END Header_handleButtonBlink */
+void handleButtonBlink(void *argument)
 {
   /* USER CODE BEGIN 5 */
-  /* Infinite loop */
-  for(;;)
-  {
-	  osSemaphoreAcquire(myBinarySem01Handle, osWaitForever);  // Wait for button press
-	  osMutexAcquire(myMutex01Handle, osWaitForever);  // Take the mutex
+	/* Infinite loop */
+	uint8_t message; // Message received from the queue
 
-	  for (int i = 0; i < 10; i++) {  // Blink at 1Hz for 5 seconds
-		  HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
-		  osDelay(500);  // 1Hz blinking
-	  }
+	/* Infinite loop */
+	for(;;)
+	{
+		if(osMessageQueueGet(pressPeriodMessageQueueHandle, &message, 0, 0) == osOK) {
+			osMutexAcquire(LED2MutexHandle, osWaitForever); // Take the mutex
 
-	  osMutexRelease(myMutex01Handle);  // Release the mutex
-  }
+			if (message == 0) {
+				// Short press - Blink at 1Hz for 5 seconds
+				for (int i = 0; i < 10; i++) {
+					HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+					osDelay(500); // 1Hz blinking
+				}
+			} else if (message == 1) {
+				// Long press - Blink at 10Hz for 5 seconds
+				for (int i = 0; i < 100; i++) {
+					HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+					osDelay(50); // 10Hz blinking
+				}
+			}
+
+		  osMutexRelease(LED2MutexHandle); // Release the mutex
+		}
+	}
   /* USER CODE END 5 */
 }
 
-/* USER CODE BEGIN Header_StartTask02 */
+/* USER CODE BEGIN Header_handle10HzRegularBlink */
 /**
-* @brief Function implementing the myTask02 thread.
+* @brief Function implementing the regularBlink thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_StartTask02 */
-void StartTask02(void *argument)
+/* USER CODE END Header_handle10HzRegularBlink */
+void handle10HzRegularBlink(void *argument)
 {
-  /* USER CODE BEGIN StartTask02 */
+  /* USER CODE BEGIN handle10HzRegularBlink */
   /* Infinite loop */
-  for(;;)
-  {
-	  osSemaphoreAcquire(myBinarySem02Handle, osWaitForever);  // Wait for timer event
-	  osMutexAcquire(myMutex01Handle, osWaitForever);  // Take the mutex
+	  for(;;)
+	  {
+		  osSemaphoreAcquire(timerBinarySemHandle, osWaitForever);  // Wait for timer event
+		  osMutexAcquire(LED2MutexHandle, osWaitForever);  // Take the mutex
 
-	  for (int i = 0; i < 20; i++) {  // Blink at 10Hz for 2 seconds
-		  HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
-		  osDelay(100);  // 10Hz blinking
+		  for (int i = 0; i < 40; i++) {  // Blink at 10Hz for 2 seconds
+			  HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+			  osDelay(50);  // 10Hz blinking
+		  }
+
+		  osMutexRelease(LED2MutexHandle);  // Release the mutex
 	  }
-
-	  osMutexRelease(myMutex01Handle);  // Release the mutex
-  }
-  /* USER CODE END StartTask02 */
+  /* USER CODE END handle10HzRegularBlink */
 }
 
 /**
